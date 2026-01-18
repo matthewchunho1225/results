@@ -1,0 +1,512 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  onSnapshot, 
+  updateDoc,
+  deleteDoc
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  User, 
+  Lock, 
+  LogOut, 
+  Plus, 
+  Trash2, 
+  GraduationCap, 
+  ClipboardList,
+  Search,
+  CheckCircle2,
+  BookOpen,
+  Edit3,
+  X
+} from 'lucide-react';
+
+// Firebase 配置
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'student-grade-mgmt-v3';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('login'); 
+  const [error, setError] = useState('');
+  
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('student');
+
+  const [students, setStudents] = useState([]);
+  const [currentUserData, setCurrentUserData] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // 1. 初始化 Auth
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 監聽數據
+  useEffect(() => {
+    if (!user || view !== 'teacher-dashboard') return;
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'students');
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setStudents(list);
+    });
+    return () => unsubscribe();
+  }, [user, view]);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (role === 'teacher') {
+      if (username === 'wch' && password === 'Chun1225') {
+        setView('teacher-dashboard');
+      } else {
+        setError('老師帳號或密碼錯誤');
+      }
+    } else {
+      try {
+        const studentDoc = doc(db, 'artifacts', appId, 'public', 'data', 'students', username);
+        const docSnap = await getDoc(studentDoc);
+        if (docSnap.exists() && docSnap.data().password === password) {
+          setCurrentUserData({ id: username, ...docSnap.data() });
+          setView('student-dashboard');
+        } else {
+          setError('學生帳號或密碼錯誤');
+        }
+      } catch (err) {
+        setError('系統連接失敗');
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    setView('login');
+    setUsername('');
+    setPassword('');
+    setCurrentUserData(null);
+  };
+
+  const [newStudent, setNewStudent] = useState({ id: '', name: '', password: '' });
+  const addStudent = async () => {
+    if (!newStudent.id || !newStudent.name || !newStudent.password) return;
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', newStudent.id), {
+      name: newStudent.name,
+      password: newStudent.password,
+      grades: []
+    });
+    setNewStudent({ id: '', name: '', password: '' });
+  };
+
+  const deleteStudent = async (id) => {
+    if (window.confirm('確定要刪除學生及其所有成績？')) {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', id));
+    }
+  };
+
+  // 成績錄入與編輯狀態
+  const [activeStudentId, setActiveStudentId] = useState(null);
+  const [editIndex, setEditIndex] = useState(null); // 用於記錄正在編輯哪一筆成績
+  const [selectedSubject, setSelectedSubject] = useState('中國歷史科');
+  const [testType, setTestType] = useState('測驗');
+  
+  const initialChiHist = { choice: 0, fill: 0, sort: 0, term: 0, qa: 0, data: 0 };
+  const initialHist = { choice: 0, logic: 0, shortQa: 0, dataRes: 0, english: 0, extend: 0 };
+  
+  const [chiHistGrades, setChiHistGrades] = useState(initialChiHist);
+  const [histGrades, setHistGrades] = useState(initialHist);
+
+  // 進入編輯模式
+  const startEdit = (studentId, gradeIndex, gradeData) => {
+    setActiveStudentId(studentId);
+    setEditIndex(gradeIndex);
+    setSelectedSubject(gradeData.subject);
+    setTestType(gradeData.type);
+    
+    if (gradeData.subject === '中國歷史科') {
+      setChiHistGrades(gradeData.details);
+      setHistGrades(initialHist);
+    } else {
+      setHistGrades(gradeData.details);
+      setChiHistGrades(initialChiHist);
+    }
+  };
+
+  // 新增或更新成績
+  const saveGrade = async (studentId) => {
+    const student = students.find(s => s.id === studentId);
+    let detailedGrades = {};
+    let total = 0;
+
+    if (selectedSubject === '中國歷史科') {
+      detailedGrades = chiHistGrades;
+      total = Object.values(chiHistGrades).reduce((a, b) => Number(a) + Number(b), 0);
+    } else {
+      detailedGrades = histGrades;
+      total = Object.values(histGrades).reduce((a, b) => Number(a) + Number(b), 0);
+    }
+
+    const newEntry = {
+      subject: selectedSubject,
+      type: testType,
+      date: editIndex !== null ? student.grades[editIndex].date : new Date().toLocaleDateString(),
+      details: detailedGrades,
+      total: total
+    };
+
+    let updatedGrades = [...(student.grades || [])];
+    
+    if (editIndex !== null) {
+      // 修改模式
+      updatedGrades[editIndex] = newEntry;
+    } else {
+      // 新增模式
+      updatedGrades.push(newEntry);
+    }
+    
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', studentId), {
+      grades: updatedGrades
+    });
+
+    // 重置狀態
+    setChiHistGrades(initialChiHist);
+    setHistGrades(initialHist);
+    setActiveStudentId(null);
+    setEditIndex(null);
+  };
+
+  if (loading) return <div className="flex h-screen items-center justify-center font-sans text-slate-400">系統初始化中...</div>;
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20">
+      <nav className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-50 shadow-sm">
+        <div className="flex items-center gap-2">
+          <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-lg shadow-indigo-100">
+            <GraduationCap size={24} />
+          </div>
+          <h1 className="text-xl font-bold tracking-tight text-slate-800">歷史學科成績管理</h1>
+        </div>
+        {view !== 'login' && (
+          <button onClick={handleLogout} className="flex items-center gap-2 text-slate-500 hover:text-red-600 font-bold px-4 py-2 rounded-xl hover:bg-red-50 transition-all">
+            <LogOut size={20} />
+            <span>登出</span>
+          </button>
+        )}
+      </nav>
+
+      <main className="max-w-5xl mx-auto p-6 mt-4">
+        {view === 'login' && (
+          <div className="max-w-md mx-auto mt-12 bg-white p-10 rounded-[2.5rem] shadow-2xl shadow-indigo-100 border border-slate-100">
+            <div className="text-center mb-8">
+              <h2 className="text-3xl font-black text-slate-800">系統登入</h2>
+              <p className="text-slate-400 mt-2 font-medium">請選擇您的身份進入系統</p>
+            </div>
+            
+            <div className="flex bg-slate-100 p-1.5 rounded-2xl mb-8">
+              {['student', 'teacher'].map(r => (
+                <button key={r} onClick={() => setRole(r)} className={`flex-1 py-3 rounded-xl font-bold transition-all ${role === r ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500'}`}>
+                  {r === 'student' ? '學生查分' : '老師管理'}
+                </button>
+              ))}
+            </div>
+
+            <form onSubmit={handleLogin} className="space-y-6">
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700 ml-1">登入帳號</label>
+                <div className="relative">
+                  <User className="absolute left-4 top-4 text-slate-300" size={18} />
+                  <input type="text" required className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500" placeholder={role === 'teacher' ? "wch" : "學號"} value={username} onChange={e => setUsername(e.target.value)} />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700 ml-1">登入密碼</label>
+                <div className="relative">
+                  <Lock className="absolute left-4 top-4 text-slate-300" size={18} />
+                  <input type="password" required className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
+                </div>
+              </div>
+              {error && <div className="text-red-500 text-sm font-bold text-center bg-red-50 py-2 rounded-xl">{error}</div>}
+              <button className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-lg hover:bg-indigo-700 shadow-xl shadow-indigo-200 transition-all active:scale-[0.98]">確認登入</button>
+            </form>
+          </div>
+        )}
+
+        {view === 'student-dashboard' && currentUserData && (
+          <div className="space-y-6">
+            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 flex justify-between items-center">
+              <div>
+                <h2 className="text-3xl font-black text-slate-800">{currentUserData.name} <span className="text-indigo-600">同學</span></h2>
+                <p className="text-slate-400 font-bold mt-1">學號: {currentUserData.id}</p>
+              </div>
+              <div className="h-16 w-16 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600">
+                <BookOpen size={32} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {['中國歷史科', '歷史科'].map(subj => {
+                const subjGrades = currentUserData.grades?.filter(g => g.subject === subj) || [];
+                const avg = subjGrades.length > 0 
+                  ? (subjGrades.reduce((a, b) => a + b.total, 0) / subjGrades.length).toFixed(1)
+                  : '--';
+                return (
+                  <div key={subj} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                    <h3 className="font-black text-lg mb-4 flex items-center gap-2">
+                      <div className="w-2 h-6 bg-indigo-500 rounded-full" />
+                      {subj} 概覽
+                    </h3>
+                    <div className="flex justify-between items-end">
+                      <div>
+                        <p className="text-slate-400 text-sm font-bold">平均分數</p>
+                        <p className="text-4xl font-black text-slate-800">{avg}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-slate-400 text-sm font-bold">記錄數量</p>
+                        <p className="text-xl font-bold text-indigo-600">{subjGrades.length}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
+              <div className="p-6 border-b border-slate-50 bg-slate-50/50">
+                <h3 className="font-black text-lg">詳細成績單</h3>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {currentUserData.grades?.slice().reverse().map((g, i) => (
+                  <div key={i} className="p-6 hover:bg-slate-50/50 transition-all">
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${g.subject === '中國歷史科' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+                          {g.subject}
+                        </span>
+                        <h4 className="text-xl font-bold mt-2 text-slate-800">{g.type}</h4>
+                        <p className="text-slate-400 text-xs font-bold">{g.date}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-3xl font-black text-indigo-600">{g.total}</p>
+                        <p className="text-[10px] font-bold text-slate-300">TOTAL SCORE</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                      {Object.entries(g.details).map(([key, val]) => (
+                        <div key={key} className="bg-slate-50 p-2 rounded-xl text-center">
+                          <p className="text-[9px] font-black text-slate-400 uppercase truncate">
+                            {key === 'choice' ? '選擇' : key === 'fill' ? '填充' : key === 'sort' ? '排序' : 
+                             key === 'term' ? '名詞' : key === 'qa' ? '問答' : key === 'data' ? '資料' : 
+                             key === 'logic' ? '辨正' : key === 'shortQa' ? '短答' : key === 'dataRes' ? '資料題' :
+                             key === 'english' ? 'ENG' : key === 'extend' ? '延伸' : key}
+                          </p>
+                          <p className="font-bold text-slate-700">{val}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {(!currentUserData.grades || currentUserData.grades.length === 0) && (
+                  <div className="p-20 text-center text-slate-300 font-bold">暫無任何評分記錄</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === 'teacher-dashboard' && (
+          <div className="space-y-8">
+            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100">
+              <h2 className="text-xl font-black mb-6 flex items-center gap-2">
+                <Plus className="text-indigo-600" /> 註冊新學生
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <input type="text" placeholder="學號" className="px-5 py-4 bg-slate-50 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold" value={newStudent.id} onChange={e => setNewStudent({...newStudent, id: e.target.value})} />
+                <input type="text" placeholder="姓名" className="px-5 py-4 bg-slate-50 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold" value={newStudent.name} onChange={e => setNewStudent({...newStudent, name: e.target.value})} />
+                <input type="text" placeholder="登入密碼" className="px-5 py-4 bg-slate-50 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 font-bold" value={newStudent.password} onChange={e => setNewStudent({...newStudent, password: e.target.value})} />
+                <button onClick={addStudent} className="bg-indigo-600 text-white rounded-2xl font-black hover:bg-indigo-700 shadow-lg shadow-indigo-100 transition-all">建立帳號</button>
+              </div>
+            </div>
+
+            <div className="relative">
+              <Search className="absolute left-5 top-5 text-slate-300" size={20} />
+              <input type="text" placeholder="搜索學生姓名或編號..." className="w-full pl-14 pr-6 py-5 bg-white border border-slate-100 rounded-[1.5rem] outline-none shadow-sm font-bold text-slate-600" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+            </div>
+
+            <div className="space-y-4">
+              {students.filter(s => s.name.includes(searchTerm) || s.id.includes(searchTerm)).map(student => (
+                <div key={student.id} className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+                  <div className="p-6 flex flex-wrap justify-between items-center gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="h-14 w-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center font-black text-xl">{student.name.charAt(0)}</div>
+                      <div>
+                        <h3 className="font-black text-lg text-slate-800">{student.name}</h3>
+                        <p className="text-slate-400 font-bold text-xs">ID: {student.id} | PW: {student.password}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => {
+                          if (activeStudentId === student.id && editIndex === null) {
+                            setActiveStudentId(null);
+                          } else {
+                            setActiveStudentId(student.id);
+                            setEditIndex(null);
+                            setChiHistGrades(initialChiHist);
+                            setHistGrades(initialHist);
+                          }
+                        }} 
+                        className={`px-6 py-3 rounded-xl font-black transition-all ${activeStudentId === student.id && editIndex === null ? 'bg-slate-800 text-white' : 'bg-indigo-50 text-indigo-600'}`}
+                      >
+                        錄入新成績
+                      </button>
+                      <button onClick={() => deleteStudent(student.id)} className="p-3 text-slate-300 hover:text-red-600 transition-all"><Trash2 size={22} /></button>
+                    </div>
+                  </div>
+
+                  {activeStudentId === student.id && (
+                    <div className="p-8 bg-slate-50/80 border-t border-slate-100">
+                      <div className="flex justify-between items-center mb-6">
+                        <div className="flex gap-4">
+                          <select className="px-4 py-3 rounded-xl border-none font-black shadow-sm" value={selectedSubject} onChange={e => setSelectedSubject(e.target.value)}>
+                            <option>中國歷史科</option>
+                            <option>歷史科</option>
+                          </select>
+                          <select className="px-4 py-3 rounded-xl border-none font-black shadow-sm" value={testType} onChange={e => setTestType(e.target.value)}>
+                            <option>測驗</option>
+                            <option>考試</option>
+                            <option>小測</option>
+                          </select>
+                        </div>
+                        {editIndex !== null && (
+                          <div className="flex items-center gap-2 bg-amber-100 text-amber-700 px-4 py-2 rounded-xl font-bold">
+                            <Edit3 size={16} /> 正在修改現有成績
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+                        {selectedSubject === '中國歷史科' ? (
+                          <>
+                            {[
+                              { l: '選擇題', k: 'choice' }, { l: '填充題', k: 'fill' }, { l: '排序題', k: 'sort' },
+                              { l: '歷史名詞', k: 'term' }, { l: '問答題', k: 'qa' }, { l: '資料回應', k: 'data' }
+                            ].map(item => (
+                              <div key={item.k} className="space-y-1">
+                                <label className="text-[10px] font-black text-slate-500 uppercase ml-1">{item.l}</label>
+                                <input type="number" className="w-full px-4 py-3 rounded-xl border-none shadow-sm font-bold" value={chiHistGrades[item.k]} onChange={e => setChiHistGrades({...chiHistGrades, [item.k]: e.target.value})} />
+                              </div>
+                            ))}
+                          </>
+                        ) : (
+                          <>
+                            {[
+                              { l: '選擇題', k: 'choice' }, { l: '史事辨正', k: 'logic' }, { l: '短問答', k: 'shortQa' },
+                              { l: '歷史資料', k: 'dataRes' }, { l: 'English Sec', k: 'english' }, { l: '延伸題', k: 'extend' }
+                            ].map(item => (
+                              <div key={item.k} className="space-y-1">
+                                <label className="text-[10px] font-black text-slate-500 uppercase ml-1">{item.l}</label>
+                                <input type="number" className="w-full px-4 py-3 rounded-xl border-none shadow-sm font-bold" value={histGrades[item.k]} onChange={e => setHistGrades({...histGrades, [item.k]: e.target.value})} />
+                              </div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                      
+                      <div className="flex justify-end border-t border-slate-200 pt-6">
+                        <div className="flex items-center gap-6">
+                          <div className="text-right">
+                            <p className="text-[10px] font-black text-slate-400">總分計算</p>
+                            <p className="text-2xl font-black text-indigo-600">
+                              {selectedSubject === '中國歷史科' 
+                                ? Object.values(chiHistGrades).reduce((a, b) => Number(a) + Number(b), 0)
+                                : Object.values(histGrades).reduce((a, b) => Number(a) + Number(b), 0)}
+                            </p>
+                          </div>
+                          <button onClick={() => saveGrade(student.id)} className={`${editIndex !== null ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-600 hover:bg-indigo-700'} text-white px-10 py-4 rounded-2xl font-black shadow-xl transition-all`}>
+                            {editIndex !== null ? '更新成績記錄' : '儲存成績記錄'}
+                          </button>
+                          {editIndex !== null && (
+                            <button onClick={() => { setActiveStudentId(null); setEditIndex(null); }} className="text-slate-400 hover:text-slate-600"><X /></button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="px-6 pb-6 overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-slate-400 border-b border-slate-50">
+                          <th className="py-4 text-left font-bold text-[10px] uppercase">科目</th>
+                          <th className="py-4 text-left font-bold text-[10px] uppercase">類型</th>
+                          <th className="py-4 text-left font-bold text-[10px] uppercase">總分</th>
+                          <th className="py-4 text-right font-bold text-[10px] uppercase">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {(student.grades || []).slice().reverse().map((g, idx) => {
+                          const originalIndex = student.grades.length - 1 - idx;
+                          return (
+                            <tr key={idx} className="group hover:bg-slate-50/50 transition-all">
+                              <td className="py-4">
+                                <span className={`font-black ${g.subject === '中國歷史科' ? 'text-red-500' : 'text-blue-500'}`}>{g.subject}</span>
+                                <div className="text-[10px] font-bold text-slate-300">{g.date}</div>
+                              </td>
+                              <td className="py-4 font-bold text-slate-600">{g.type}</td>
+                              <td className="py-4">
+                                <span className="font-black text-indigo-600 text-lg">{g.total}</span>
+                              </td>
+                              <td className="py-4 text-right">
+                                <button 
+                                  onClick={() => startEdit(student.id, originalIndex, g)}
+                                  className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                  title="修改成績"
+                                >
+                                  <Edit3 size={18} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
